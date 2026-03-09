@@ -1,0 +1,58 @@
+{
+  "name": "@moltrust/x402",
+  "version": "0.1.0",
+  "description": "MolTrust trust verification middleware for x402 payments — integrates MoltGuard agent scoring into Hono/Express servers",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./hono": {
+      "types": "./dist/hono.d.ts",
+      "import": "./dist/hono.mjs",
+      "require": "./dist/hono.js"
+    },
+    "./express": {
+      "types": "./dist/express.d.ts",
+      "import": "./dist/express.mjs",
+      "require": "./dist/express.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "moltrust",
+    "x402",
+    "middleware",
+    "trust",
+    "agent",
+    "hono",
+    "express",
+    "moltguard",
+    "did",
+    "reputation",
+    "web3"
+  ],
+  "author": "Lars Kroehl <kersten.kroehl@cryptokri.ch>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MoltyCel/moltrust-x402"
+  },
+  "homepage": "https://moltrust.ch",
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}
