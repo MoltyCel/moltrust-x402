@@ -1,6 +1,6 @@
 {
   "name": "@moltrust/x402",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MolTrust trust verification middleware for x402 payments — integrates MoltGuard agent scoring into Hono/Express servers",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

@@ -18,17 +18,25 @@ const DEFAULT_MIN_SCORE = 50;
 const DEFAULT_TIMEOUT = 3000;
 
 /**
- * Extract wallet address from x402 X-PAYMENT header.
- * The header is a base64-encoded JSON with a `payload` containing `fromAddress`.
+ * Extract wallet address from x402 payment header.
+ *
+ * Supports both:
+ * - v2: PAYMENT-SIGNATURE header (base64 JSON with payload.fromAddress)
+ * - v1: X-PAYMENT header (same format, backward compat)
+ *
+ * The header value is base64-encoded JSON with a `payload` containing `fromAddress`.
  */
-export function extractWallet(xPayment: string | null | undefined): string | null {
-  if (!xPayment) return null;
+export function extractWallet(paymentHeader: string | null | undefined): string | null {
+  if (!paymentHeader) return null;
   try {
-    const decoded = JSON.parse(Buffer.from(xPayment, "base64").toString());
+    // Strip "x402 " prefix if present (used in some receipt formats)
+    const raw = paymentHeader.startsWith("x402 ") ? paymentHeader.slice(5) : paymentHeader;
+    const decoded = JSON.parse(Buffer.from(raw, "base64").toString());
     const addr: string | undefined =
       decoded?.payload?.fromAddress ??
       decoded?.fromAddress ??
-      decoded?.payload?.authorization?.from;
+      decoded?.payload?.authorization?.from ??
+      decoded?.from;
     if (addr && /^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
     return null;
   } catch {
@@ -59,10 +67,10 @@ export async function fetchScore(
 
 /** Check score and return rejection reason or null if OK. */
 export async function checkAgent(
-  xPayment: string | null | undefined,
+  paymentHeader: string | null | undefined,
   opts: MoltrustGuardOptions
 ): Promise<{ status: number; body: Record<string, unknown> } | null> {
-  const wallet = extractWallet(xPayment);
+  const wallet = extractWallet(paymentHeader);
   if (!wallet) return null; // no wallet → pass through (not an x402 request)
 
   const data = await fetchScore(wallet, opts);
