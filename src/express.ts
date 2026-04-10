@@ -1,20 +1,16 @@
-import { checkAgent, type MoltrustGuardOptions } from "./core";
+import { checkAgent, fetchScore, extractWallet, type MoltrustGuardOptions } from "./core";
 
-export type { MoltrustGuardOptions, MoltGuardScore } from "./core";
+export type { MoltrustGuardOptions, MoltGuardScore, MoltGuardResult } from "./core";
 
 /**
- * Express middleware that checks the paying agent's MoltGuard score
- * before allowing x402 payment flow.
- *
- * Reads PAYMENT-SIGNATURE (v2) first, then X-PAYMENT (v1 backward compat).
+ * Express middleware that checks the paying agent's MoltGuard score.
  *
  * ```ts
- * app.use(moltrustGuard({ minScore: 50 }))
+ * app.use(moltrustGuard({ minScore: 50, failBehavior: 'open' }))
  * ```
  */
 export function moltrustGuard(opts: MoltrustGuardOptions = {}) {
   return async (req: any, res: any, next: (err?: any) => void) => {
-    // v2 first, then v1 backward compat
     const paymentHeader =
       (req.headers["payment-signature"] as string | undefined) ??
       (req.headers["x-payment"] as string | undefined);
@@ -22,6 +18,19 @@ export function moltrustGuard(opts: MoltrustGuardOptions = {}) {
     if (rejection) {
       return res.status(rejection.status).json(rejection.body);
     }
+
+    // Attach moltrust context if wallet found
+    const wallet = extractWallet(paymentHeader);
+    if (wallet) {
+      const data = await fetchScore(wallet, opts);
+      req.moltrust = {
+        wallet,
+        score: data?.score ?? null,
+        protocol: "x402",
+        failOpen: !data,
+      };
+    }
+
     next();
   };
 }

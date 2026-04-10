@@ -5,12 +5,21 @@ export interface MoltrustGuardOptions {
   apiUrl?: string;
   /** Timeout in ms for the score lookup. Default: 3000 */
   timeout?: number;
+  /** Behavior when MolTrust API is unreachable. Default: 'open' */
+  failBehavior?: "open" | "closed";
 }
 
 export interface MoltGuardScore {
   wallet: string;
   score: number;
   _meta?: Record<string, unknown>;
+}
+
+export interface MoltGuardResult {
+  wallet: string;
+  score: number | null;
+  protocol: string;
+  failOpen?: boolean;
 }
 
 const DEFAULT_API = "https://api.moltrust.ch/guard";
@@ -23,13 +32,10 @@ const DEFAULT_TIMEOUT = 3000;
  * Supports both:
  * - v2: PAYMENT-SIGNATURE header (base64 JSON with payload.fromAddress)
  * - v1: X-PAYMENT header (same format, backward compat)
- *
- * The header value is base64-encoded JSON with a `payload` containing `fromAddress`.
  */
 export function extractWallet(paymentHeader: string | null | undefined): string | null {
   if (!paymentHeader) return null;
   try {
-    // Strip "x402 " prefix if present (used in some receipt formats)
     const raw = paymentHeader.startsWith("x402 ") ? paymentHeader.slice(5) : paymentHeader;
     const decoded = JSON.parse(Buffer.from(raw, "base64").toString());
     const addr: string | undefined =
@@ -44,7 +50,7 @@ export function extractWallet(paymentHeader: string | null | undefined): string 
   }
 }
 
-/** Fetch agent score from MoltGuard. Returns null on any failure (fail-open). */
+/** Fetch agent score from MoltGuard. Returns null on any failure. */
 export async function fetchScore(
   wallet: string,
   opts: MoltrustGuardOptions
@@ -69,12 +75,27 @@ export async function fetchScore(
 export async function checkAgent(
   paymentHeader: string | null | undefined,
   opts: MoltrustGuardOptions
-): Promise<{ status: number; body: Record<string, unknown> } | null> {
+): Promise<{ status: number; body: Record<string, unknown>; failOpen?: boolean } | null> {
   const wallet = extractWallet(paymentHeader);
-  if (!wallet) return null; // no wallet → pass through (not an x402 request)
+  if (!wallet) return null; // no wallet -> pass through (not an x402 request)
 
   const data = await fetchScore(wallet, opts);
-  if (!data) return null; // fail open — MoltGuard unreachable
+  const failBehavior = opts.failBehavior ?? "open";
+
+  if (!data) {
+    if (failBehavior === "closed") {
+      return {
+        status: 403,
+        body: {
+          error: "trust_api_unavailable",
+          message: "MolTrust API is unreachable. Request denied (failBehavior: closed).",
+          wallet,
+        },
+      };
+    }
+    // fail-open: pass through with marker
+    return null;
+  }
 
   const minScore = opts.minScore ?? DEFAULT_MIN_SCORE;
   if (data.score < minScore) {
