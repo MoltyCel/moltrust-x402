@@ -5,8 +5,19 @@ export interface MoltrustGuardOptions {
   apiUrl?: string;
   /** Timeout in ms for the score lookup. Default: 3000 */
   timeout?: number;
-  /** Behavior when MolTrust API is unreachable. Default: 'open' */
+  /**
+   * Behavior when MolTrust API is unreachable. Default: 'closed' as of 0.2.0.
+   * A gate that opens when the registry is down is not a gate. Set to 'open'
+   * per integration to restore the previous behaviour.
+   */
   failBehavior?: "open" | "closed";
+  /** Seconds a successful score is reused without a lookup. Default: 60 */
+  cacheTtlSeconds?: number;
+  /**
+   * Seconds a cached score stays usable after a FAILED lookup. Default: 300.
+   * This is what keeps a short registry outage from denying every request.
+   */
+  cacheStaleGraceSeconds?: number;
 }
 
 export interface MoltGuardScore {
@@ -71,6 +82,71 @@ export async function fetchScore(
   }
 }
 
+/**
+ * Per-process cache of successful score lookups.
+ *
+ * Two windows: inside the TTL the score is reused with no network call; between
+ * the TTL and the grace window it is still usable, but only after a live lookup
+ * has failed. Bounded so a stream of unknown wallets cannot grow the process.
+ */
+const CACHE_MAX_ENTRIES = 1024;
+
+const scoreCache = {
+  entries: new Map<string, { score: number; storedAt: number }>(),
+
+  put(wallet: string, score: number): void {
+    if (this.entries.size >= CACHE_MAX_ENTRIES && !this.entries.has(wallet)) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(wallet, { score, storedAt: Date.now() });
+  },
+
+  getFresh(wallet: string, ttlMs: number): number | undefined {
+    if (ttlMs <= 0) return undefined; // always look up live
+    const entry = this.entries.get(wallet);
+    if (!entry) return undefined;
+    return Date.now() - entry.storedAt <= ttlMs ? entry.score : undefined;
+  },
+
+  getStale(wallet: string, graceMs: number): number | undefined {
+    if (graceMs <= 0) return undefined; // grace disabled
+    const entry = this.entries.get(wallet);
+    if (!entry) return undefined;
+    if (Date.now() - entry.storedAt <= graceMs) return entry.score;
+    this.entries.delete(wallet);
+    return undefined;
+  },
+
+  clear(): void {
+    this.entries.clear();
+  },
+};
+
+/** Exposed for tests. */
+export const __scoreCache = scoreCache;
+
+function applyThreshold(
+  wallet: string,
+  score: number,
+  opts: MoltrustGuardOptions
+): { status: number; body: Record<string, unknown> } | null {
+  const minScore = opts.minScore ?? DEFAULT_MIN_SCORE;
+  if (score < minScore) {
+    return {
+      status: 403,
+      body: {
+        error: "moltrust_score_too_low",
+        message: `Agent score ${score} is below the required minimum of ${minScore}`,
+        wallet,
+        score,
+        minScore,
+      },
+    };
+  }
+  return null;
+}
+
 /** Check score and return rejection reason or null if OK. */
 export async function checkAgent(
   paymentHeader: string | null | undefined,
@@ -79,10 +155,24 @@ export async function checkAgent(
   const wallet = extractWallet(paymentHeader);
   if (!wallet) return null; // no wallet -> pass through (not an x402 request)
 
+  const failBehavior = opts.failBehavior ?? "closed";
+  const ttlMs = (opts.cacheTtlSeconds ?? 60) * 1000;
+  const graceMs = (opts.cacheStaleGraceSeconds ?? 300) * 1000;
+
+  const fresh = scoreCache.getFresh(wallet, ttlMs);
+  if (fresh !== undefined) {
+    return applyThreshold(wallet, fresh, opts);
+  }
+
   const data = await fetchScore(wallet, opts);
-  const failBehavior = opts.failBehavior ?? "open";
 
   if (!data) {
+    const stale = scoreCache.getStale(wallet, graceMs);
+    if (stale !== undefined) {
+      // A recent score is a better answer than either extreme while the
+      // registry is briefly unreachable.
+      return applyThreshold(wallet, stale, opts);
+    }
     if (failBehavior === "closed") {
       return {
         status: 403,
@@ -97,19 +187,7 @@ export async function checkAgent(
     return null;
   }
 
-  const minScore = opts.minScore ?? DEFAULT_MIN_SCORE;
-  if (data.score < minScore) {
-    return {
-      status: 403,
-      body: {
-        error: "moltrust_score_too_low",
-        message: `Agent score ${data.score} is below the required minimum of ${minScore}`,
-        wallet,
-        score: data.score,
-        minScore,
-      },
-    };
-  }
+  scoreCache.put(wallet, data.score);
 
-  return null; // score OK
+  return applyThreshold(wallet, data.score, opts);
 }
