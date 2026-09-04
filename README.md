@@ -36,6 +36,32 @@ app.use(moltrustGuard({ minScore: 50 }));
 4. Passes through if score is OK
 5. **Fails open** if MoltGuard is unreachable (never blocks payments on downtime)
 
+## Payer address formats
+
+The payer is read from `payload.fromAddress`, `fromAddress`,
+`payload.authorization.from` or `from` in the decoded payment header, and is
+recognized in these forms:
+
+| Chain | Format | Example |
+|-------|--------|---------|
+| EVM | `0x` + 40 hex | `0x1111…1111` |
+| Casper | ed25519 public key: `01` + 64 hex | `01aaaa…aaaa` |
+| Casper | secp256k1 public key: `02` + 66 hex | `02bbbb…bbbb` |
+| Casper | account hash: `account-hash-` + 64 hex | `account-hash-cccc…cccc` |
+
+Casper public keys are lower-cased before lookup so one payer is one cache key;
+EVM addresses are passed through unchanged so checksum casing survives. A bare
+64-hex string is not accepted — it is an account hash without its prefix, but
+also the shape of a raw hash on other chains, so it is too ambiguous to treat as
+a payer. Anything unrecognized yields no wallet and the request is not gated.
+
+If the payload carries a CAIP-2 `network`, it is read from `network` or
+`payload.network` and included in the middleware context and in the `403` body.
+Casper networks are `casper:casper` (mainnet) and `casper:casper-test`
+(testnet). Casper x402 payments settle in wCSPR (CEP-18) through the Casper
+facilitator at [x402-facilitator.cspr.cloud](https://x402-facilitator.cspr.cloud)
+([docs](https://docs.cspr.cloud)).
+
 ## Options
 
 | Option | Type | Default | Description |
