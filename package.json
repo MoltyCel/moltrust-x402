@@ -1,7 +1,7 @@
 {
   "name": "@moltrust/x402",
-  "version": "0.2.0",
-  "description": "MolTrust trust verification middleware for x402 payments \u2014 integrates MoltGuard agent scoring into Hono/Express servers",
+  "version": "2.0.0",
+  "description": "Offline trust gate for x402 endpoints \u2014 verifies a MolTrust attestation and the caller's own signature without a network call",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -56,5 +56,8 @@
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
