@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.0.0
+
+`requireMolTrust` — an offline gate. The caller presents a MolTrust-signed
+attestation and a signature made with its own key; both are verified against a
+cached JWKS. No network call in the request path.
+
+Why it matters: `moltrustGuard`, the middleware this package has shipped since
+0.1.0, asks our API for a score on every request and believes the answer. That
+puts a call to us inside someone else's request path, and it verifies nothing —
+the response is JSON over TLS, so whoever can answer that request sets the
+score. `moltrustGuard` is still exported; this is the shape to prefer.
+
+Deny by default, with a named reason on every denial. A withheld score is a
+denial: it is not a low score and it is not a pass.
+
+Three implementations share one set of vectors — this one, `moltrust-enforce`
+in Python, and the copy vendored into MoltGuard. `src/gate.vectors.json` is
+generated from a pinned clock and constant key seeds, and every copy replays
+all seventeen.
+
+Adapters for Express (`requireMolTrust`) and Hono (`requireMolTrustHono`).
+Node >= 18; Ed25519 comes from `node:crypto`, so no new dependency.
+
 ## 0.2.0 — 2026-08-31
 
 ### Changed — behaviour, not API (read before upgrading)
