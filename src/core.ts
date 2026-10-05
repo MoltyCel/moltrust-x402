@@ -30,12 +30,85 @@ export interface MoltGuardResult {
   wallet: string;
   score: number | null;
   protocol: string;
+  /** CAIP-2 network the payment declared, when the payload carried one. */
+  network?: string | null;
   failOpen?: boolean;
+}
+
+/** Payer identity and declared network, as read from an x402 payment header. */
+export interface X402Payment {
+  wallet: string;
+  network: string | null;
 }
 
 const DEFAULT_API = "https://api.moltrust.ch/guard";
 const DEFAULT_MIN_SCORE = 50;
 const DEFAULT_TIMEOUT = 3000;
+
+/** EVM (eip155) payer address. */
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/** Casper ed25519 public key: 01 tag + 32 bytes. */
+const CASPER_ED25519 = /^01[0-9a-fA-F]{64}$/;
+
+/** Casper secp256k1 public key: 02 tag + 33 bytes. */
+const CASPER_SECP256K1 = /^02[0-9a-fA-F]{66}$/;
+
+/** Casper account hash, prefix included. */
+const CASPER_ACCOUNT_HASH = /^account-hash-([0-9a-fA-F]{64})$/;
+
+/**
+ * Normalize a payer address, or return null if it is not one we recognize.
+ *
+ * EVM addresses are returned verbatim so checksummed casing survives. Casper
+ * public keys are lower-cased so the same payer always hits the same cache key
+ * and the same score URL; an account hash keeps its `account-hash-` prefix with
+ * a lower-cased tail.
+ *
+ * A bare 64-hex string is deliberately NOT accepted: it is an account hash
+ * without its prefix, but it is also the shape of a raw hash on several other
+ * chains, so treating it as a Casper payer would be a guess.
+ */
+function normalizeAddress(addr: unknown): string | null {
+  if (typeof addr !== "string") return null;
+  const value = addr.trim();
+  if (EVM_ADDRESS.test(value)) return value;
+  if (CASPER_ED25519.test(value) || CASPER_SECP256K1.test(value)) return value.toLowerCase();
+  const accountHash = CASPER_ACCOUNT_HASH.exec(value);
+  if (accountHash) return `account-hash-${accountHash[1].toLowerCase()}`;
+  return null;
+}
+
+/**
+ * Extract the payer address and declared network from an x402 payment header.
+ *
+ * Supports both:
+ * - v2: PAYMENT-SIGNATURE header (base64 JSON with payload.fromAddress)
+ * - v1: X-PAYMENT header (same format, backward compat)
+ *
+ * Recognized payer addresses are EVM `0x…` addresses and Casper payers
+ * (ed25519 / secp256k1 public keys, or an `account-hash-…`). The network is the
+ * CAIP-2 id the payload declared, if any — `eip155:8453`, `casper:casper`,
+ * `casper:casper-test` — and is null when the payload does not carry one.
+ */
+export function extractPayment(paymentHeader: string | null | undefined): X402Payment | null {
+  if (!paymentHeader) return null;
+  try {
+    const raw = paymentHeader.startsWith("x402 ") ? paymentHeader.slice(5) : paymentHeader;
+    const decoded = JSON.parse(Buffer.from(raw, "base64").toString());
+    const wallet = normalizeAddress(
+      decoded?.payload?.fromAddress ??
+        decoded?.fromAddress ??
+        decoded?.payload?.authorization?.from ??
+        decoded?.from
+    );
+    if (!wallet) return null;
+    const declared = decoded?.network ?? decoded?.payload?.network;
+    return { wallet, network: typeof declared === "string" && declared ? declared : null };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Extract wallet address from x402 payment header.
@@ -45,20 +118,7 @@ const DEFAULT_TIMEOUT = 3000;
  * - v1: X-PAYMENT header (same format, backward compat)
  */
 export function extractWallet(paymentHeader: string | null | undefined): string | null {
-  if (!paymentHeader) return null;
-  try {
-    const raw = paymentHeader.startsWith("x402 ") ? paymentHeader.slice(5) : paymentHeader;
-    const decoded = JSON.parse(Buffer.from(raw, "base64").toString());
-    const addr: string | undefined =
-      decoded?.payload?.fromAddress ??
-      decoded?.fromAddress ??
-      decoded?.payload?.authorization?.from ??
-      decoded?.from;
-    if (addr && /^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
-    return null;
-  } catch {
-    return null;
-  }
+  return extractPayment(paymentHeader)?.wallet ?? null;
 }
 
 /** Fetch agent score from MoltGuard. Returns null on any failure. */
@@ -67,7 +127,10 @@ export async function fetchScore(
   opts: MoltrustGuardOptions
 ): Promise<MoltGuardScore | null> {
   const base = (opts.apiUrl ?? DEFAULT_API).replace(/\/+$/, "");
-  const url = `${base}/api/agent/score-free/${wallet}`;
+  // Encoded because payer ids are no longer all `0x` + hex. encodeURIComponent
+  // leaves an EVM address and an `account-hash-…` untouched, so this is a
+  // no-op for every address shape the middleware accepts today.
+  const url = `${base}/api/agent/score-free/${encodeURIComponent(wallet)}`;
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT;
 
   try {
@@ -129,7 +192,8 @@ export const __scoreCache = scoreCache;
 function applyThreshold(
   wallet: string,
   score: number,
-  opts: MoltrustGuardOptions
+  opts: MoltrustGuardOptions,
+  network: string | null = null
 ): { status: number; body: Record<string, unknown> } | null {
   const minScore = opts.minScore ?? DEFAULT_MIN_SCORE;
   if (score < minScore) {
@@ -141,6 +205,7 @@ function applyThreshold(
         wallet,
         score,
         minScore,
+        ...(network ? { network } : {}),
       },
     };
   }
@@ -152,8 +217,9 @@ export async function checkAgent(
   paymentHeader: string | null | undefined,
   opts: MoltrustGuardOptions
 ): Promise<{ status: number; body: Record<string, unknown>; failOpen?: boolean } | null> {
-  const wallet = extractWallet(paymentHeader);
-  if (!wallet) return null; // no wallet -> pass through (not an x402 request)
+  const payment = extractPayment(paymentHeader);
+  if (!payment) return null; // no recognized payer -> pass through (not an x402 request)
+  const { wallet, network } = payment;
 
   const failBehavior = opts.failBehavior ?? "closed";
   const ttlMs = (opts.cacheTtlSeconds ?? 60) * 1000;
@@ -161,7 +227,7 @@ export async function checkAgent(
 
   const fresh = scoreCache.getFresh(wallet, ttlMs);
   if (fresh !== undefined) {
-    return applyThreshold(wallet, fresh, opts);
+    return applyThreshold(wallet, fresh, opts, network);
   }
 
   const data = await fetchScore(wallet, opts);
@@ -171,7 +237,7 @@ export async function checkAgent(
     if (stale !== undefined) {
       // A recent score is a better answer than either extreme while the
       // registry is briefly unreachable.
-      return applyThreshold(wallet, stale, opts);
+      return applyThreshold(wallet, stale, opts, network);
     }
     if (failBehavior === "closed") {
       return {
@@ -180,6 +246,7 @@ export async function checkAgent(
           error: "trust_api_unavailable",
           message: "MolTrust API is unreachable. Request denied (failBehavior: closed).",
           wallet,
+          ...(network ? { network } : {}),
         },
       };
     }
@@ -189,5 +256,5 @@ export async function checkAgent(
 
   scoreCache.put(wallet, data.score);
 
-  return applyThreshold(wallet, data.score, opts);
+  return applyThreshold(wallet, data.score, opts, network);
 }

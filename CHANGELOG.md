@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — non-EVM payers bypassed the gate
+
+`extractWallet` validated the payer address against a hard-coded
+`0x[0-9a-fA-F]{40}` regex, so any address that was not an EVM address came back
+as `null`. `checkAgent` reads that `null` as "not an x402 request" and passes the
+request through, which means a Casper payment was never scored at all — the
+threshold was not applied, and `failBehavior: "closed"` did not deny during a
+registry outage. The gate silently opened for every non-EVM payer.
+
+Casper payer addresses are now recognized: ed25519 public keys (`01` + 64 hex),
+secp256k1 public keys (`02` + 66 hex) and account hashes
+(`account-hash-` + 64 hex). Public keys are normalized to lower case so one
+payer is one cache key and one lookup URL; EVM addresses are still returned
+verbatim, so checksummed casing is unaffected. A bare 64-hex string is not
+accepted, being too ambiguous to attribute to a chain.
+
+### Added
+
+- `extractPayment(header)` returns `{ wallet, network }`, where `network` is the
+  CAIP-2 id declared in the payload (`network` or `payload.network`) or `null`.
+  Casper networks are `casper:casper` and `casper:casper-test`. `extractWallet`
+  delegates to it and its signature is unchanged.
+- The declared network is exposed on the Hono/Express `moltrust` context
+  (`MoltGuardResult.network`) and included in the `403` body when present.
+- The wallet is URL-encoded in the score lookup path. This is a no-op for every
+  accepted address shape and is there so a new one cannot alter the URL.
+
+Nothing that worked before behaves differently: EVM payers take the same path,
+produce the same lookups and the same responses.
+
 ## 0.2.0 — 2026-08-31
 
 ### Changed — behaviour, not API (read before upgrading)
