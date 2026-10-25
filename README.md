@@ -44,6 +44,10 @@ app.use(moltrustGuard({ minScore: 50 }));
 | `apiUrl` | `string` | `https://api.moltrust.ch/guard` | MoltGuard API base URL |
 | `timeout` | `number` | `3000` | Timeout in ms |
 
+## Security
+
+[Security advisory 2026-10-25](SECURITY-ADVISORY-2026-10-25.md): self-issued credential types in gate attestations, `@moltrust/x402` 2.0.0 with `credentialType` or `requiredCredentials`.
+
 ## License
 
 MIT — [moltrust.ch](https://moltrust.ch)
