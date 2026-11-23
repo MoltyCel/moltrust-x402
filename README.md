@@ -1,5 +1,7 @@
 # @moltrust/x402
 
+> This repository is archived. The published package @moltrust/x402 lives in MoltyCel/moltrust-api under packages/x402.
+
 MolTrust trust verification middleware for [x402](https://www.x402.org/) payments. Checks the paying agent's [MoltGuard](https://moltrust.ch/moltguard.html) reputation score before allowing payment flow.
 
 ## Install
